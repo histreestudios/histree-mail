@@ -1,0 +1,22 @@
+name: Sender
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+concurrency:
+  group: sender
+  cancel-in-progress: false
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --omit=dev
+      - run: node runner/send.mjs
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
