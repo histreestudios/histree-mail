@@ -1,0 +1,12 @@
+name = "histree-mailflow"
+main = "src/index.js"
+compatibility_date = "2026-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["* * * * *"]          # runs every minute, free plan allows this
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mailflow"
+database_id = "PASTE_ID_FROM_wrangler_d1_create"
