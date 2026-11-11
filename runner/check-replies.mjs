@@ -1,4 +1,4 @@
-import Imap from 'imap-simple';
+import { ImapFlow } from 'imapflow';
 
 const APP_URL = process.env.APP_URL;
 const RUNNER_TOKEN = process.env.RUNNER_TOKEN;
@@ -36,45 +36,34 @@ async function main() {
 
   for (const item of boxes) {
     const m = item.mailbox;
-    const imapConfig = {
-      imap: {
+    const client = new ImapFlow({
+      host: item.imap_host || m.host,
+      port: 993,
+      secure: true,
+      auth: {
         user: m.username,
-        password: m.password,
-        host: item.imap_host,
-        port: 993,
-        tls: true,
-        authTimeout: 15000,
-        tlsOptions: { rejectUnauthorized: false }
-      }
-    };
+        pass: m.password
+      },
+      logger: false
+    });
 
     console.log(`Connecting to IMAP for ${m.email}...`);
     try {
-      const connection = await Imap.connect(imapConfig);
-      await connection.openBox('INBOX');
-
-      // Search for emails received since campaign start
-      const searchCriteria = [['SINCE', new Date(item.since)]];
-      const fetchOptions = { bodies: ['HEADER.FIELDS.FROM'], struct: true };
-      const messages = await connection.search(searchCriteria, fetchOptions);
+      await client.connect();
+      await client.mailboxOpen('INBOX');
 
       const repliedEmails = new Set();
       const targetEmails = new Set(item.emails.map(e => e.toLowerCase()));
+      const sinceDate = new Date(item.since);
 
-      for (const msg of messages) {
-        const fromHeader = msg.parts.find(p => p.which === 'HEADER.FIELDS.FROM');
-        if (fromHeader && fromHeader.body && fromHeader.body.from) {
-          const rawFrom = fromHeader.body.from[0];
-          const match = rawFrom.match(/<([^>]+)>|([^\s]+@[^\s]+)/);
-          const email = match ? (match[1] || match[2]).toLowerCase() : '';
-          
-          if (email && targetEmails.has(email)) {
-            repliedEmails.add(email);
-          }
+      for await (let message of client.fetch({ since: sinceDate }, { envelope: true })) {
+        const fromAddr = message.envelope?.from?.[0]?.address?.toLowerCase();
+        if (fromAddr && targetEmails.has(fromAddr)) {
+          repliedEmails.add(fromAddr);
         }
       }
 
-      await connection.end();
+      await client.logout();
 
       if (repliedEmails.size > 0) {
         console.log(`Found replies for: ${[...repliedEmails].join(', ')}`);
@@ -88,6 +77,7 @@ async function main() {
       }
     } catch (err) {
       console.error(`IMAP check failed for ${m.email}:`, err.message);
+      try { await client.logout(); } catch (e) {}
       await api('replies', {
         replied: [],
         bounced: [],
