@@ -1,6 +1,9 @@
 name: Sender
+
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'  # Runs automatically every 5 minutes
 
 concurrency:
   group: sender-workflow
