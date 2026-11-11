@@ -206,7 +206,7 @@ async function runnerNext(env, depth = 0) {
     const subj = render(v.subject, x), body = render(v.body, x);
     if (subj.miss || body.miss) { await db.batch([db.prepare("UPDATE cl SET status='review' WHERE id=?").bind(x.clid), ev('review', 'Unresolved placeholder')]); return again(); }
     const link = `${base}/u/${await utok(env, x.email)}`;
-    return J({ job: { kind: 'mail', id: x.clid, to: x.email, subject: subj.out, text: `${body.out}\n\n--\n${c.mname}\nNot interested? Unsubscribe: ${link}`,
+    return J({ job: { kind: 'mail', id: x.clid, to: x.email, subject: subj.out, text: body.out,
       headers: { 'List-Unsubscribe': `<${link}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
       mailbox: await mb(env, { name: c.mname, email: c.memail, host: c.host, port: c.port, secure: c.secure, username: c.username, pass_enc: c.pass_enc }) } });
   }
