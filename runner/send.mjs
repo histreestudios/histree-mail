@@ -1,17 +1,26 @@
-// Runs on GitHub Actions. Checks replies, then asks the dashboard what is due, sends it over SMTP, reports back.
+// Runs on GitHub Actions. Checks replies, asks dashboard what is due, sends over SMTP, reports back, and exits immediately.
 import nodemailer from 'nodemailer';
 import { ImapFlow } from 'imapflow';
+
 const { APP_URL, RUNNER_TOKEN } = process.env;
-if (!APP_URL || !RUNNER_TOKEN) { console.error('Missing APP_URL or RUNNER_TOKEN secret in GitHub.'); process.exit(1); }
+if (!APP_URL || !RUNNER_TOKEN) { 
+  console.error('Missing APP_URL or RUNNER_TOKEN secret in GitHub.'); 
+  process.exit(1); 
+}
+
 const base = APP_URL.trim().replace(/\/+$/, '');
 const call = async (p, b) => {
-  const r = await fetch(`${base}/api/runner/${p}`, { method: 'POST', headers: { Authorization: 'Bearer ' + RUNNER_TOKEN, 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) });
+  const r = await fetch(`${base}/api/runner/${p}`, { 
+    method: 'POST', 
+    headers: { Authorization: 'Bearer ' + RUNNER_TOKEN, 'Content-Type': 'application/json' }, 
+    body: JSON.stringify(b || {}) 
+  });
   if (!r.ok) throw new Error(`${p}: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
   return r.json();
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// Stops follow-ups for people who replied, and marks bounced addresses. Never blocks sending.
+// Stops follow-ups for people who replied, and marks bounced addresses.
 async function checkReplies() {
   const { boxes } = await call('reply-targets');
   const replied = new Set(), bounced = new Set(), status = [];
@@ -49,63 +58,60 @@ async function checkReplies() {
 
 try { await checkReplies(); } catch (e) { console.log('Reply check skipped:', e.message); }
 
-const end = Date.now() + 10 * 60 * 1000;
-  let sent = 0;
+let sent = 0;
+let running = true;
 
-  while (Date.now() < end) {
-    let res;
-    try {
-      res = await call('next');
-    } catch (e) {
-      console.log('Fetch error:', e.message);
-      await sleep(10000);
-      continue;
-    }
-
-    const { job, wait, note } = res;
-    if (note) console.log(note);
-
-    if (!job) {
-      const sleepTime = wait > 0 ? wait * 1000 : 10000;
-      if (Date.now() + sleepTime < end) {
-        console.log(`No job ready right now. Sleeping ${Math.round(sleepTime / 1000)}s...`);
-        await sleep(sleepTime);
-        continue;
-      }
-      break;
-    }
-
-    try {
-      console.log(`Sending email to ${job.to}...`);
-      const tr = nodemailer.createTransport({
-        host: job.mailbox.host,
-        port: job.mailbox.port,
-        secure: job.mailbox.secure,
-        auth: { user: job.mailbox.username, pass: job.mailbox.password },
-        connectionTimeout: 20000,
-        socketTimeout: 30000
-      });
-
-      await tr.sendMail({
-        from: `${job.mailbox.name} <${job.mailbox.email}>`,
-        to: job.to,
-        subject: job.subject,
-        text: job.text,
-        replyTo: job.mailbox.email,
-        headers: job.headers || {}
-      });
-
-      await call('result', { kind: job.kind, id: job.id, ok: true, subject: job.subject, text: job.text });
-      sent++;
-      console.log(`Sent successfully! Total sent this run: ${sent}`);
-    } catch (e) {
-      console.log(`Failed sending to ${job.to}: ${e.message}`);
-      await call('result', { kind: job.kind, id: job.id, ok: false, error: String(e.message || e) });
-    }
-
-    if (job.delay_after && Date.now() + job.delay_after * 1000 < end) {
-      await sleep(job.delay_after * 1000);
-    }
+while (running) {
+  let res;
+  try {
+    res = await call('next');
+  } catch (e) {
+    console.log('Fetch error:', e.message);
+    break;
   }
 
-  console.log('Finished. Emails sent this run:', sent);
+  const { job, note } = res;
+  if (note) console.log(note);
+
+  // If no job is ready right now, exit immediately instead of sleeping
+  if (!job) {
+    console.log('No more jobs ready right now. Exiting runner.');
+    break;
+  }
+
+  try {
+    console.log(`Sending email to ${job.to}...`);
+    const tr = nodemailer.createTransport({
+      host: job.mailbox.host,
+      port: job.mailbox.port,
+      secure: job.mailbox.secure,
+      auth: { user: job.mailbox.username, pass: job.mailbox.password },
+      connectionTimeout: 20000,
+      socketTimeout: 30000
+    });
+
+    await tr.sendMail({
+      from: `${job.mailbox.name} <${job.mailbox.email}>`,
+      to: job.to,
+      subject: job.subject,
+      text: job.text,
+      replyTo: job.mailbox.email,
+      headers: job.headers || {}
+    });
+
+    await call('result', { kind: job.kind, id: job.id, ok: true, subject: job.subject, text: job.text });
+    sent++;
+    console.log(`Sent successfully! Total sent this run: ${sent}`);
+  } catch (e) {
+    console.log(`Failed sending to ${job.to}: ${e.message}`);
+    await call('result', { kind: job.kind, id: job.id, ok: false, error: String(e.message || e) });
+  }
+
+  // Small pause between emails if needed, but no long background sleeps
+  if (job.delay_after) {
+    await sleep(job.delay_after * 1000);
+  }
+}
+
+console.log('Finished. Emails sent this run:', sent);
+process.exit(0);
