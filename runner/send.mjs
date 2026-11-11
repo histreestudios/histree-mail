@@ -49,11 +49,17 @@ async function checkReplies() {
 
 try { await checkReplies(); } catch (e) { console.log('Reply check skipped:', e.message); }
 
-const end = Date.now() + 13 * 60 * 1000; let sent = 0;
-while (Date.now() < end) {
-  const { job, wait, note } = await call('next');
-  if (note) console.log(note);
-  if (!job) { if (wait && Date.now() + wait * 1000 < end) { await sleep(wait * 1000 + 1000); continue; } break; }
+const end = Date.now() + 12 * 60 * 1000; let sent = 0;
+  while (Date.now() < end) {
+    const { job, wait, note } = await call('next');
+    if (note) console.log(note);
+    if (!job) {
+      if (wait > 0 && Date.now() + wait * 1000 < end) {
+        await sleep(wait * 1000 + 1000);
+        continue;
+      }
+      break;
+    }
   const m = job.mailbox; console.log('::add-mask::' + m.password);
   try {
     const tr = nodemailer.createTransport({ host: m.host, port: m.port, secure: !!m.secure, auth: { user: m.username, pass: m.password }, connectionTimeout: 20000, socketTimeout: 30000 });
