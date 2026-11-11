@@ -1,8 +1,3 @@
 name = "histree-mail"
-main = "src/index.js"
-compatibility_date = "2026-06-01"
-
-[[d1_databases]]
-binding = "DB"
-database_name = "mailflow"
-database_id = "PASTE_ID_FROM_wrangler_d1_create"
+main = "src/index.ts" # or src/index.js depending on your code
+compatibility_date = "2026-01-01"
