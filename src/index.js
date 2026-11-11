@@ -190,7 +190,7 @@ async function runnerNext(env, depth = 0) {
   let wait = 0; const busy = new Set();
   for (const c of cs) {
     const tl = local(c.tz);
-    if (busy.has(c.mailbox_id) || tl.hour < c.start_hour || tl.hour >= c.end_hour || !c.days.split(',').includes(tl.wd)) continue;
+    if (busy.has(c.mailbox_id)) continue;
     const cap = capToday(c.daily_cap, pj(await metaGet(db, 'warm:' + c.mailbox_id)), tl.day);
     if ((await one("SELECT COUNT(*) n FROM events WHERE mailbox_id=? AND day=? AND type='sent'", c.mailbox_id, tl.day)).n >= cap) continue;
     const x = await one("SELECT cl.id clid,cl.step,l.* FROM cl JOIN leads l ON l.id=cl.lead_id WHERE cl.campaign_id=? AND cl.status='active' AND cl.next_at<=? AND l.status='active' ORDER BY cl.next_at LIMIT 1", c.id, now);
