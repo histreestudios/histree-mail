@@ -187,11 +187,12 @@ async function runnerNext(env, depth = 0) {
   if (o && (await db.prepare("UPDATE outbox SET status='sending' WHERE id=? AND status='pending'").bind(o.oid).run()).meta.changes)
     return J({ job: { kind: 'outbox', id: o.oid, to: o.to_addr, subject: o.subject, text: o.body, delay_after: o.okind === 'test' ? 0 : 15 + rnd(20), mailbox: await mb(env, o) } });
   const cs = (await db.prepare("SELECT c.*,m.name mname,m.email memail,m.host,m.port,m.secure,m.username,m.pass_enc,m.daily_cap,m.next_at mnext FROM campaigns c JOIN mailboxes m ON m.id=c.mailbox_id WHERE c.status='active' AND m.paused=0 LIMIT 6").all()).results;
-  let wait = 0; const busy = new Set();
+  let wait = 0;
+  const busy = /* @__PURE__ */ new Set();
   for (const c of cs) {
     const tl = local(c.tz);
     if (busy.has(c.mailbox_id)) continue;
-    const cap = capToday(c.daily_cap, pj(await metaGet(db, 'warm:' + c.mailbox_id)), tl.day);
+    const cap = capToday(c.daily_cap, pj(await metaGet(db, "warm:" + c.mailbox_id)), tl.day);
     if ((await one("SELECT COUNT(*) n FROM events WHERE mailbox_id=? AND day=? AND type='sent'", c.mailbox_id, tl.day)).n >= cap) continue;
     const x = await one("SELECT cl.id clid,cl.step,l.* FROM cl JOIN leads l ON l.id=cl.lead_id WHERE cl.campaign_id=? AND cl.status='active' AND cl.next_at<=? AND l.status='active' ORDER BY cl.next_at LIMIT 1", c.id, now);
     if (!x) continue;
