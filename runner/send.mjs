@@ -49,26 +49,63 @@ async function checkReplies() {
 
 try { await checkReplies(); } catch (e) { console.log('Reply check skipped:', e.message); }
 
-const end = Date.now() + 12 * 60 * 1000; let sent = 0;
+const end = Date.now() + 10 * 60 * 1000;
+  let sent = 0;
+
   while (Date.now() < end) {
-    const { job, wait, note } = await call('next');
+    let res;
+    try {
+      res = await call('next');
+    } catch (e) {
+      console.log('Fetch error:', e.message);
+      await sleep(10000);
+      continue;
+    }
+
+    const { job, wait, note } = res;
     if (note) console.log(note);
+
     if (!job) {
-      if (wait > 0 && Date.now() + wait * 1000 < end) {
-        await sleep(wait * 1000 + 1000);
+      const sleepTime = wait > 0 ? wait * 1000 : 10000;
+      if (Date.now() + sleepTime < end) {
+        console.log(`No job ready right now. Sleeping ${Math.round(sleepTime / 1000)}s...`);
+        await sleep(sleepTime);
         continue;
       }
       break;
     }
-  const m = job.mailbox; console.log('::add-mask::' + m.password);
-  try {
-    const tr = nodemailer.createTransport({ host: m.host, port: m.port, secure: !!m.secure, auth: { user: m.username, pass: m.password }, connectionTimeout: 20000, socketTimeout: 30000 });
-    await tr.sendMail({ from: { name: m.name, address: m.email }, to: job.to, subject: job.subject, text: job.text, replyTo: m.email, headers: job.headers || {} });
-    await call('result', { kind: job.kind, id: job.id, ok: true, subject: job.subject, text: job.text }); sent++; console.log(`Sent (${job.kind}) #${job.id}`);
-  } catch (e) {
-    console.log(`Failed (${job.kind}) #${job.id}: ${e.message}`);
-    await call('result', { kind: job.kind, id: job.id, ok: false, error: String(e.message || e) });
+
+    try {
+      console.log(`Sending email to ${job.to}...`);
+      const tr = nodemailer.createTransport({
+        host: job.mailbox.host,
+        port: job.mailbox.port,
+        secure: job.mailbox.secure,
+        auth: { user: job.mailbox.username, pass: job.mailbox.password },
+        connectionTimeout: 20000,
+        socketTimeout: 30000
+      });
+
+      await tr.sendMail({
+        from: `${job.mailbox.name} <${job.mailbox.email}>`,
+        to: job.to,
+        subject: job.subject,
+        text: job.text,
+        replyTo: job.mailbox.email,
+        headers: job.headers || {}
+      });
+
+      await call('result', { kind: job.kind, id: job.id, ok: true, subject: job.subject, text: job.text });
+      sent++;
+      console.log(`Sent successfully! Total sent this run: ${sent}`);
+    } catch (e) {
+      console.log(`Failed sending to ${job.to}: ${e.message}`);
+      await call('result', { kind: job.kind, id: job.id, ok: false, error: String(e.message || e) });
+    }
+
+    if (job.delay_after && Date.now() + job.delay_after * 1000 < end) {
+      await sleep(job.delay_after * 1000);
+    }
   }
-  if (job.delay_after && Date.now() + job.delay_after * 1000 < end) await sleep(job.delay_after * 1000);
-}
-console.log('Finished. Emails sent this run:', sent);
+
+  console.log('Finished. Emails sent this run:', sent);
