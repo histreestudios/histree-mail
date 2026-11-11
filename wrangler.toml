@@ -5,4 +5,4 @@ compatibility_date = "2026-06-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "mailflow"
-database_id = "f4d14d4b-0798-4119-b083-4b924f06ea67"
+database_id = "5a42ddb6-525a-4256-81da-e119861392d4"
