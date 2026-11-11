@@ -142,7 +142,7 @@ async function route(env, path, b, sp) {
     const ins = [], tg = [], RES = ['first_name', 'last_name', 'company', 'website', 'role', 'note', 'personalization_note'];
     for (const x of b.rows || []) {
       const e = String(x.email || '').trim().toLowerCase(); if (!RE.test(e)) continue;
-      ins.push(db.prepare("INSERT OR IGNORE INTO leads(email,first_name,last_name,company,website,role,source,note,status,added) VALUES(?,?,?,?,?,?,?,?,CASE WHEN EXISTS(SELECT 1 FROM suppression WHERE email=?) THEN 'dnc' ELSE 'new' END,?)")
+      ins.push(db.prepare("INSERT OR REPLACE INTO leads(email,first_name,last_name,company,website,role,source,note,status,added) VALUES(?,?,?,?,?,?,?,?,CASE WHEN EXISTS(SELECT 1 FROM suppression WHERE email=?) THEN 'dnc' ELSE 'new' END,?)")
         .bind(e, x.first_name || '', x.last_name || '', x.company || '', x.website || '', x.role || '', String(b.batch || x.source || 'csv').slice(0, 80), x.personalization_note || x.note || '', e, Date.now()));
       for (const [k, v] of Object.entries(x.tags || {})) { const kk = String(k).toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 30); if (kk && !RES.includes(kk) && String(v).trim()) tg.push(db.prepare('INSERT OR REPLACE INTO lead_tags(lead_id,k,v) SELECT id,?,? FROM leads WHERE email=?').bind(kk, String(v).slice(0, 500), e)); }
     }
