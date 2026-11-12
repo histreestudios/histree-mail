@@ -70,9 +70,10 @@ async function restoreGrp(db, grp) {
 }
 
 export default {
-     async scheduled(event, env, ctx) {
-     ctx.waitUntil(triggerSender(env));
-   },
+  // Cloudflare timer: starts the GitHub sender automatically (see wrangler.toml [triggers]).
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(triggerSender(env));
+  },
   async fetch(req, env) {
     const url = new URL(req.url), p = url.pathname;
     try {
