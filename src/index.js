@@ -134,7 +134,16 @@ async function route(env, path, b, sp) {
       total: (await db.prepare(`SELECT COUNT(*) n FROM leads ${w.sql}`).bind(...w.args).first()).n,
       batches: await all('SELECT source,COUNT(*) n FROM leads GROUP BY source ORDER BY MAX(id) DESC LIMIT 50') });
   }
-  if (r === 'history' && !id) return J({ rows: await all('SELECT o.*,m.email from_email FROM outbox o LEFT JOIN mailboxes m ON m.id=o.mailbox_id ORDER BY o.id DESC LIMIT 200') });
+  if (r === 'history' && !id) {
+    const q = (sp && sp.get('q') || '').trim().toLowerCase().replace(/[%_]/g, '');
+    if (q) {
+      const like = '%' + q + '%';
+      return J({ q,
+        rows: await all('SELECT o.*,m.email from_email FROM outbox o LEFT JOIN mailboxes m ON m.id=o.mailbox_id WHERE lower(o.to_addr) LIKE ? ORDER BY o.id DESC LIMIT 300', like),
+        leads: await all("SELECT l.email,l.first_name,l.last_name,l.company,l.status,(SELECT ts FROM events WHERE detail=l.email COLLATE NOCASE AND type=CASE l.status WHEN 'replied' THEN 'reply' WHEN 'bounced' THEN 'bounce' END ORDER BY id DESC LIMIT 1) status_ts FROM leads l WHERE lower(l.email) LIKE ? LIMIT 20", like) });
+    }
+    return J({ rows: await all('SELECT o.*,m.email from_email FROM outbox o LEFT JOIN mailboxes m ON m.id=o.mailbox_id ORDER BY o.id DESC LIMIT 200') });
+  }
   if (r === 'leads' && id === 'delete') {
     let ids;
     if (Array.isArray(b.ids)) ids = b.ids.map(Number).slice(0, 2001);
@@ -321,7 +330,7 @@ async function runnerResult(env, b) {
 // Reply and bounce detection: the sender reads each mailbox's inbox over IMAP and reports back.
 async function replyTargets(env) {
   const db = env.DB, by = {};
-  const rows = (await db.prepare("SELECT c.mailbox_id mid,l.email,MIN(e.ts) first FROM cl JOIN campaigns c ON c.id=cl.campaign_id JOIN leads l ON l.id=cl.lead_id JOIN events e ON e.cl_id=cl.id AND e.type='sent' WHERE cl.status IN ('active','sending') AND l.status='active' GROUP BY c.mailbox_id,l.email LIMIT 2000").all()).results;
+  const rows = (await db.prepare("SELECT c.mailbox_id mid,l.email,MIN(e.ts) first FROM cl JOIN campaigns c ON c.id=cl.campaign_id JOIN leads l ON l.id=cl.lead_id JOIN events e ON e.cl_id=cl.id AND e.type='sent' WHERE (cl.status IN ('active','sending') OR (cl.status='done' AND e.ts>?)) AND l.status='active' GROUP BY c.mailbox_id,l.email LIMIT 2000").bind(Date.now() - 30 * 864e5).all()).results;
   for (const r of rows) { const g = by[r.mid] ||= { since: r.first, emails: [] }; g.emails.push(r.email.toLowerCase()); g.since = Math.min(g.since, r.first); }
   const boxes = [];
   for (const mid of Object.keys(by)) {
@@ -392,7 +401,7 @@ dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);bo
 </style><body><header><img class=logo src=/logo.png alt=""><div><b>Mailflow</b> <small>by Histree Studios</small></div><div class=hb><button id=rs>Run Sender now</button><button id=pz></button></div></header><nav id=nav></nav><main id=app></main><div id=toasts></div><dialog id=dlg></dialog>
 <script>
 const $=s=>document.querySelector(s),NL=String.fromCharCode(10),CR=String.fromCharCode(13);
-let S=null,tab='Overview',L={q:'',status:'',batch:'',campaign:'',page:0},sel=new Set(),hsel=new Set(),imp=null,steps=newSteps(),HF='all',LF=null;
+let S=null,tab='Overview',L={q:'',status:'',batch:'',campaign:'',page:0},sel=new Set(),hsel=new Set(),imp=null,steps=newSteps(),HF='all',LF=null,HQ='';
 function newSteps(){return[{delay:0,vs:[{subject:'',body:''}],a:0}]}
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ago=t=>{const m=Math.round((Date.now()-t)/60000);return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' h ago':Math.round(m/1440)+' d ago'};
@@ -465,8 +474,8 @@ Mailboxes(){$('#app').innerHTML='<div class=p><h2>Add a Hostinger mailbox</h2><p
  document.querySelectorAll('button[data-d]').forEach(b=>b.onclick=go(b,async()=>{if(!await ask('Delete mailbox?','This removes the mailbox and its saved password.',0,'Delete'))return;await api('mailbox/'+b.dataset.d+'/delete',{});toast('Mailbox deleted');await load()}))},
 Compose(){$('#app').innerHTML='<div class=p><h2>Compose</h2><p class=sub>Send a one-off email from any of your mailboxes. Recipients get separate emails with a short pause between them.</p><div class=r><div><label>Send from</label><select id=cf>'+S.mailboxes.map(m=>'<option value='+m.id+'>'+esc(m.email)+'</option>').join('')+'</select></div></div><label>To (one or more addresses, up to 20, separated by commas or new lines)</label><textarea id=ct style="min-height:70px" placeholder="name@company.com"></textarea><label>Subject</label><input id=cs><label>Message</label><textarea id=cb style="min-height:220px"></textarea><p class=row><button class=pr id=cq>Queue email</button><span class=m>Plain text.</span></p></div>';
  $('#cq').onclick=go($('#cq'),async()=>{const j=await api('compose',{mailbox_id:$('#cf').value,to:$('#ct').value,subject:$('#cs').value,body:$('#cb').value});toast('Queued '+j.queued+' email(s).'+senderMsg(j));$('#ct').value='';$('#cs').value='';$('#cb').value=''})},
-async 'Sent history'(){hsel.clear();$('#app').innerHTML='<div class=p><div class="row sp"><div><h2>Sent history</h2><p class=sub style="margin:0">Click a row to read the email. Deleted emails go to Trash for 30 days.</p></div><div class=row><select id=hf style="width:auto">'+[['all','All'],['campaign','Campaign'],['manual','Manual'],['test','Tests']].map(o=>'<option value='+o[0]+(HF===o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select><button class=dg id=hs>Delete selected (0)</button><button class=dg id=ha>Clear all shown</button></div></div></div><div id=hl><p class=m>Loading...</p></div>';
- const j=await api('history'),fin=r=>['sent','failed','cancelled'].includes(r.status);
+async 'Sent history'(){hsel.clear();$('#app').innerHTML='<div class=p><div class="row sp"><div><h2>Sent history</h2><p class=sub style="margin:0">Type an email address and press Search to see everything sent to that person. Deleted emails go to Trash for 30 days.</p></div><div class=row><input id=hq placeholder=\"Search by email address\" value=\"'+esc(HQ)+'\" style=\"width:260px\"><button class=pr id=hqb>Search</button>'+(HQ?'<button id=hqc>Clear</button>':'')+'<select id=hf style="width:auto">'+[['all','All'],['campaign','Campaign'],['manual','Manual'],['test','Tests']].map(o=>'<option value='+o[0]+(HF===o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select><button class=dg id=hs>Delete selected (0)</button><button class=dg id=ha>Clear all shown</button></div></div></div><div id=hl><p class=m>Loading...</p></div>';
+ const j=await api('history'+(HQ?'?q='+encodeURIComponent(HQ):'')),fin=r=>['sent','failed','cancelled'].includes(r.status);
  const del=async(body,msg)=>{if(!await ask('Delete from history?',msg,0,'Move to Trash'))return;let n=0,r;do{r=await api('history/delete',body);n+=r.deleted}while(body.kind&&r.deleted>=2000);toast('Moved '+n+' email(s) to Trash');hsel.clear();V['Sent history']()};
  const d2=()=>{const rows=j.rows.filter(r=>HF==='all'||r.kind===HF);$('#hl').innerHTML='<div class="p w"><table><tr><th><input type=checkbox id=sa style="width:auto"><th>When<th>From<th>To<th>Subject<th>Type<th>Status<th></tr>'+(rows.map(r=>'<tr class=click data-o='+r.id+'><td>'+(fin(r)?'<input type=checkbox style="width:auto" data-h='+r.id+'>':'')+'<td>'+when(r.ts)+'<br><span class=m>'+ago(r.ts)+'</span><td>'+esc(r.from_email||'')+'<td>'+esc(r.to_addr)+'<td>'+esc(r.subject)+'<td>'+(r.kind==='campaign'?'Step '+r.step:r.kind)+'<td>'+tag(r.status)+'<td>'+(r.status==='pending'?'<button class=dg data-c='+r.id+'>Cancel</button>':fin(r)?'<button class="dg x" title="Delete" data-x='+r.id+'>✕</button>':'')+'<tr hidden id=o'+r.id+'><td><td colspan=7><pre>'+esc(r.body)+(r.status==='failed'?NL+NL+'Error: '+esc(r.detail):'')+'</pre>').join('')||emp('Nothing here yet.',8))+'</table></div>';
   const q=(a,f)=>document.querySelectorAll(a).forEach(f);
@@ -475,7 +484,22 @@ async 'Sent history'(){hsel.clear();$('#app').innerHTML='<div class=p><div class
   $('#sa').onchange=e=>q('[data-h]',c=>{c.checked=e.target.checked;c.dispatchEvent(new Event('change'))});
   q('button[data-c]',b=>b.onclick=go(b,async()=>{await api('outbox/'+b.dataset.c+'/cancel',{});toast('Cancelled');V['Sent history']()}));
   q('button[data-x]',b=>b.onclick=()=>del({ids:[+b.dataset.x]},'Delete this email from history?'))};
- d2();$('#hf').onchange=e=>{HF=e.target.value;hsel.clear();d2();$('#hs').textContent='Delete selected (0)'};
+ const person=()=>{
+  const rows=(j.rows||[]).slice().reverse(),ls=j.leads||[],one=ls.length===1?ls[0]:null,st=one&&one.status_ts?one.status_ts:0;
+  const bef=st&&one.status==='replied'?rows.filter(r=>r.status==='sent'&&r.ts<=st).pop():null;
+  const lab=one&&one.status==='bounced'?'Bounced':'Reply received';
+  const mark='<div class=p style=\"margin-bottom:10px;border-left:3px solid #ff3b4c\"><b>'+lab+'</b> <span class=m>'+when(st)+' ('+ago(st)+')</span></div>';
+  const card=r=>'<div class=p style=\"margin-bottom:10px\"><div class=\"row sp\"><span><b>'+(r.kind==='campaign'?'Step '+r.step:r.kind==='manual'?'Manual email':'Test email')+'</b> <span class=m>to '+esc(r.to_addr)+' from '+esc(r.from_email||'')+'</span></span><span class=m>'+when(r.ts)+' ('+ago(r.ts)+') '+tag(r.status)+'</span></div><p style=\"margin:8px 0 4px\"><b>'+esc(r.subject)+'</b></p><pre style=\"white-space:pre-wrap;word-break:break-word\">'+esc(r.body)+(r.status==='failed'?NL+NL+'Error: '+esc(r.detail):'')+'</pre></div>';
+  let mk=0,h=ls.map(l=>'<div class=p style=\"margin-bottom:10px\"><div class=\"row sp\"><div><b>'+esc(l.email)+'</b> <span class=m>'+esc(((l.first_name||'')+' '+(l.last_name||'')).trim())+(l.company?' - '+esc(l.company):'')+'</span></div>'+tag(l.status)+'</div>'+(l.status_ts&&one?'<p style=\"margin:8px 0 0\">'+(l.status==='replied'?'Replied ':'Bounced ')+when(l.status_ts)+(l.status==='replied'?(bef?'. The last email they got from you before replying was <b>'+(bef.kind==='campaign'?'Step '+bef.step:bef.kind)+'</b>, subject: <b>'+esc(bef.subject)+'</b>.':'. We could not find which email they got before replying.'):'.')+'</p>':'')+'</div>').join('');
+  h+='<p class=m style=\"margin:4px 2px 10px\">'+rows.length+' email(s) found for '+esc(HQ)+(rows.length>=300?' (showing the latest 300)':'')+'. Oldest first.</p>';
+  h+=rows.map(r=>{let o='';if(st&&!mk&&r.ts>st){mk=1;o=mark}return o+card(r)}).join('')+(st&&!mk?mark:'');
+  if(!rows.length&&!ls.length)h='<div class=p><p class=m>Nothing found for '+esc(HQ)+'. Check the spelling, or try just part of the address.</p></div>';
+  $('#hl').innerHTML=h};
+ const show=()=>HQ?person():d2();
+ $('#hq').onkeydown=e=>{if(e.key==='Enter'){HQ=$('#hq').value.trim();V['Sent history']()}};
+ $('#hqb').onclick=()=>{HQ=$('#hq').value.trim();V['Sent history']()};
+ if($('#hqc'))$('#hqc').onclick=()=>{HQ='';V['Sent history']()};
+ show();$('#hf').onchange=e=>{HF=e.target.value;hsel.clear();show();$('#hs').textContent='Delete selected (0)'};
  $('#hs').onclick=()=>hsel.size?del({ids:[...hsel]},'Delete '+hsel.size+' selected email(s) from history?'):toast('Tick some emails first');
  $('#ha').onclick=()=>del({kind:HF},'Delete every '+(HF==='all'?'':HF+' ')+'email shown in history? Pending emails are kept.')},
 async Trash(){$('#app').innerHTML='<div class=p><div class="row sp"><div><h2>Trash</h2><p class=sub style="margin:0">Deleted items are kept for 30 days, then removed for good.</p></div><button class=dg id=et>Empty trash</button></div></div><div id=tl><p class=m>Loading...</p></div>';
@@ -519,7 +543,7 @@ async function rleads(){const j=await api('leadlist?q='+encodeURIComponent(L.q)+
  const pages=Math.max(1,Math.ceil(j.total/100)),cinfo=l=>{if(!l.campaign)return '<span class=m>Not in a campaign</span>';const c=S.campaigns.find(x=>x.id===l.campaign_id),tot=c?JSON.parse(c.steps).length:'?';return esc(l.campaign)+'<br><span class=m>'+(l.cl_status==='done'?'Completed':l.cl_status==='stopped'?'Stopped':'Sent '+l.step+' of '+tot)+'</span>'};
  el.innerHTML='<div class=p><div class=row><span class=m>Batches:</span><button class="chip '+(L.batch===''?'on':'')+'" data-b="">All</button>'+j.batches.map(b=>'<span class=row style="gap:2px"><button class="chip '+(L.batch===b.source?'on':'')+'" data-b="'+esc(b.source)+'">'+esc(b.source)+' ('+b.n+')</button><button class="dg chip" title="Move this whole batch to Trash" data-db="'+esc(b.source)+'">✕</button></span>').join('')+'</div></div>'+
  '<div class="p w"><div class="row sp" style="margin-bottom:10px"><span class=m>'+j.total+' leads</span><span class=row><button id=ds class=dg>Delete selected ('+sel.size+')</button><button id=da class=dg '+(j.total?'':'disabled')+'>Delete all '+j.total+' shown</button></span></div><table><tr><th><input type=checkbox id=sa style="width:auto"><th>Email<th>Name<th>Company<th>Campaign<th>Custom tags<th>Batch<th>Status<th></tr>'+
- (j.rows.map(l=>{const tg=JSON.parse(l.tags||'{}');return '<tr><td><input type=checkbox style="width:auto" data-s='+l.id+(sel.has(l.id)?' checked':'')+'><td>'+esc(l.email)+'<td>'+esc((l.first_name+' '+l.last_name).trim())+'<td>'+esc(l.company)+'<td>'+cinfo(l)+'<td>'+(Object.keys(tg).map(k=>'<span class=tg>'+esc(k)+': '+esc(String(tg[k]).slice(0,30))+'</span>').join('')||'<span class=m>-</span>')+'<td class=m>'+esc(l.source)+'<td>'+tag(l.status)+'<td><button data-i='+l.id+' data-st=replied>Replied</button> <button data-i='+l.id+' data-st=dnc>Do not contact</button> <button class="dg x" title="Move to Trash" data-x='+l.id+'>✕</button>'}).join('')||emp('No leads here. Import a CSV above.',9))+'</table>'+
+ (j.rows.map(l=>{const tg=JSON.parse(l.tags||'{}');return '<tr><td><input type=checkbox style="width:auto" data-s='+l.id+(sel.has(l.id)?' checked':'')+'><td>'+esc(l.email)+'<td>'+esc((l.first_name+' '+l.last_name).trim())+'<td>'+esc(l.company)+'<td>'+cinfo(l)+'<td>'+(Object.keys(tg).map(k=>'<span class=tg>'+esc(k)+': '+esc(String(tg[k]).slice(0,30))+'</span>').join('')||'<span class=m>-</span>')+'<td class=m>'+esc(l.source)+'<td>'+tag(l.status)+'<td><button data-v=\"'+esc(l.email)+'\">View emails</button> <button data-i='+l.id+' data-st=replied>Replied</button> <button data-i='+l.id+' data-st=dnc>Do not contact</button> <button class="dg x" title="Move to Trash" data-x='+l.id+'>✕</button>'}).join('')||emp('No leads here. Import a CSV above.',9))+'</table>'+
  '<div class="row" style="justify-content:center;margin-top:12px"><button id=pp '+(L.page?'':'disabled')+'>Previous</button><span class=m>Page '+(L.page+1)+' of '+pages+'</span><button id=pn '+(L.page+1<pages?'':'disabled')+'>Next</button></div></div>';
  const q=(a,f)=>el.querySelectorAll(a).forEach(f),del=async(body,msg)=>{if(!await ask('Delete leads?',msg+' They move to Trash for 30 days.',0,'Move to Trash'))return;let n=0,r;do{r=await api('leads/delete',body);n+=r.deleted}while(r.more&&body.filter);toast('Moved '+n+' lead(s) to Trash');sel.clear();await load();await rleads()};
  q('[data-b]',b=>b.onclick=()=>{L.batch=b.dataset.b;L.page=0;rleads()});q('[data-db]',b=>b.onclick=()=>del({filter:{batch:b.dataset.db},label:b.dataset.db},'Delete every lead from batch "'+b.dataset.db+'"?'));
@@ -527,6 +551,7 @@ async function rleads(){const j=await api('leadlist?q='+encodeURIComponent(L.q)+
  $('#sa').onchange=e=>{q('[data-s]',c=>{c.checked=e.target.checked;const id=+c.dataset.s;e.target.checked?sel.add(id):sel.delete(id)});$('#ds').textContent='Delete selected ('+sel.size+')'};
  $('#ds').onclick=()=>sel.size?del({ids:[...sel]},'Delete '+sel.size+' selected lead(s)?'):toast('Tick some leads first');$('#da').onclick=()=>del({filter:{q:L.q,status:L.status,batch:L.batch,campaign:L.campaign}},'Delete all '+j.total+' leads matching the current filters?');
  q('[data-x]',b=>b.onclick=()=>del({ids:[+b.dataset.x]},'Delete this lead?'));
+ q('[data-v]',b=>b.onclick=()=>{HQ=b.dataset.v;tab='Sent history';draw()});
  q('[data-st]',b=>b.onclick=go(b,async()=>{await api('lead/'+b.dataset.i+'/status',{status:b.dataset.st});await rleads()}));
  $('#pp').onclick=()=>{L.page--;rleads()};$('#pn').onclick=()=>{L.page++;rleads()}}
 load().catch(()=>{});
